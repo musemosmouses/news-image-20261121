@@ -1,27 +1,27 @@
 #!/usr/bin/env python3
 """news-image-20261121 v2: a single image summing up Saturday 21 November 2026.
 
-Pure-stdlib renderer: hand-rolled PNG encoder plus a 5x7 bitmap font.
-Deterministic: identical bytes on every run. No network, no clock, no
-randomness (the grain runs on a fixed-seed LCG).
+A renderer built only on the standard library: a PNG encoder written by hand
+and a 5x7 bitmap font. Every run produces identical bytes: no network
+access, no clock, no randomness anywhere, the grain using a fixed-seed LCG.
 
-v2 (22 Nov 21:00 watch): full rebuild on the proven news22-v2 recipe.
+v2, built during the 22 Nov 21:00 watch: a full rebuild on the proven news22-v2 recipe.
 v1's two leads were stale (Russia's big attack was 19-20 Nov, the ICJ
 Myanmar ruling 19 Nov) and its layout left a big empty panel. v2 keeps
 only stories first reported on 21 Nov 2026, organised by 9 regions like
 the bounty's winners, with 3 pictogram leads, a 42-story dense grid, a
 UTC timeline with verified times, and a bold date-check footer.
-45 stories, 9 regions, 10 moments.
+45 stories across 9 regions, plus 10 moments.
 """
 import os
 import struct
 import zlib
 
-W = 1024
-H = 1024
+W = 0x400
+H = 0x400
 
-# 5x7 bitmap font: each glyph is 7 rows of 5 bits, leftmost column
-# holds the top bit (16). All text renders in capitals.
+# 5x7 bitmap font: every glyph is 7 rows of 5 bits, and the leftmost column
+# carries the top bit (16). All text is drawn in capitals.
 FONT = {
     "A": (14, 17, 17, 31, 17, 17, 17),
     "B": (30, 17, 17, 30, 17, 17, 30),
@@ -91,8 +91,8 @@ HAIRLINE = (0xD8, 0xD2, 0xC4)
 BORDER = (0xC6, 0xC0, 0xB2)
 
 
-# Region colours: the left bar of every grid cell, the lead kickers and
-# the footer legend all use this one mapping. Nine regions, like the
+# Region colours: the left bar of each grid cell, the lead kickers and
+# the footer legend all share this one mapping: nine regions, like the
 # bounty's winning entries.
 FIELDS = {
     "MIDDLE EAST": (0xB2, 0x22, 0x22),
@@ -192,19 +192,19 @@ TIMELINE = [
 def _chunk(tag, payload):
     body = tag + payload
     return (struct.pack(">I", len(payload)) + body
-            + struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF))
+            + struct.pack(">I", zlib.crc32(body) & 4294967295))
 
 
 def encode_png(width, height, pixels):
     """Encode an RGB bytearray as one whole PNG, filter 0 on every row."""
-    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    ihdr = struct.pack(">IIBBBBB", width, height, 0x8, 0x2, 0, 0, 0)
     raw = bytearray()
-    stride = width * 3
+    stride = 3 * width
     for row_no in range(height):
-        raw.append(0)
+        raw += b"\x00"
         raw += pixels[row_no * stride:(row_no + 1) * stride]
-    idat = zlib.compress(bytes(raw), 6)
-    return (b"\x89PNG\r\n\x1a\n" + _chunk(b"IHDR", ihdr)
+    idat = zlib.compress(bytes(raw), level=6)
+    return (b'\x89PNG\r\n\x1a\n' + _chunk(b"IHDR", ihdr)
             + _chunk(b"IDAT", idat) + _chunk(b"IEND", b""))
 
 
@@ -214,12 +214,12 @@ class Canvas:
     def __init__(self, width, height, bg):
         self.w = width
         self.h = height
-        self.px = bytearray(width * height * 3)
+        self.px = bytearray(3 * width * height)
         self.fill_rect(0, 0, width, height, bg)
 
     def set(self, px, py, col):
-        if 0 <= px < self.w and 0 <= py < self.h:
-            i = (py * self.w + px) * 3
+        if 0 <= px and px < self.w and 0 <= py and py < self.h:
+            i = 3 * (py * self.w + px)
             self.px[i] = col[0]
             self.px[i + 1] = col[1]
             self.px[i + 2] = col[2]
@@ -245,15 +245,15 @@ class Canvas:
     def line(self, ax, ay, bx, by, col):
         """Bresenham line, both ends included."""
         dx = abs(bx - ax)
-        dy = -abs(by - ay)
-        sx = 1 if ax < bx else -1
-        sy = 1 if ay < by else -1
+        dy = 0 - abs(by - ay)
+        sx = -1 if ax >= bx else 1
+        sy = -1 if ay >= by else 1
         err = dx + dy
         while True:
             self.set(ax, ay, col)
             if ax == bx and ay == by:
                 return
-            e2 = 2 * err
+            e2 = err * 2
             if e2 >= dy:
                 err += dy
                 ax += sx
@@ -264,7 +264,7 @@ class Canvas:
     def disc(self, cx, cy, r, col):
         """Filled disc, drawn as horizontal scanlines."""
         for dy in range(-r, r + 1):
-            half = int((r * r - dy * dy) ** 0.5)
+            half = int(((r * r) - (dy * dy)) ** 0.5)
             self.hline(cx - half, cy + dy, half * 2 + 1, col)
 
     def triangle(self, ax, ay, bx, by, cx, cy, col):
@@ -289,7 +289,7 @@ class Canvas:
 
 def text_width(text, scale):
     """Advance width in pixels of a string at a scale: 6 units a char."""
-    return len(text) * 6 * scale
+    return 6 * scale * len(text)
 
 
 def draw_text(canvas, x, y, text, scale, colour):
@@ -305,7 +305,7 @@ def draw_text(canvas, x, y, text, scale, colour):
                     if rowbits & (16 >> c):
                         canvas.fill_rect(pen + c * scale, y + row * scale,
                                          scale, scale, colour)
-        pen += 6 * scale
+        pen = pen + 6 * scale
 
 
 def draw_text_centered(canvas, cx, y, text, scale, colour):
@@ -334,18 +334,18 @@ def draw_mixed_centered(canvas, cx, y, parts, scale):
 
 def wrap_text(text, limit):
     """Greedy word wrap to lines of at most limit characters."""
-    tokens = text.split(" ")
+    tokens = text.split(' ')
     lines = []
     current = ""
     for word in tokens:
-        if not current:
+        if current == "":
             current = word
         elif len(current) + 1 + len(word) <= limit:
-            current += " " + word
+            current = current + " " + word
         else:
             lines.append(current)
             current = word
-    if current:
+    if len(current) > 0:
         lines.append(current)
     return lines
 
@@ -418,8 +418,8 @@ def draw_capture(canvas, ox, oy, pw, ph):
 ART = (draw_burst, draw_capture, draw_quake)
 
 
-GRAIN_DENSITY = 0o67
-GRAIN_AMP = 0o4
+GRAIN_DENSITY = 55
+GRAIN_AMP = 4
 
 
 def grain(canvas):
@@ -431,32 +431,32 @@ def grain(canvas):
     paper compresses to almost nothing, grain does not.
     """
     buf = canvas.px
-    state = 123456789
+    state = 0x75BCD15
     total = len(buf)
     idx = 0
     while idx < total:
         red = buf[idx]
         green = buf[idx + 1]
         blue = buf[idx + 2]
-        if red >= 200 and green >= 200 and blue >= 200:
-            state = (1103515245 * state + 12345) & 2147483647
+        if red >= 0xC8 and green >= 0xC8 and blue >= 0xC8:
+            state = (0x41C64E6D * state + 0x3039) & 0x7FFFFFFF
             if state % 100 < GRAIN_DENSITY:
-                state = (1103515245 * state + 12345) & 2147483647
-                delta = (state >> 23) % (2 * GRAIN_AMP + 1) - GRAIN_AMP
-                buf[idx] = max(0, min(255, red + delta))
-                state = (1103515245 * state + 12345) & 2147483647
-                delta = (state >> 23) % (2 * GRAIN_AMP + 1) - GRAIN_AMP
-                buf[idx + 1] = max(0, min(255, green + delta))
-                state = (1103515245 * state + 12345) & 2147483647
-                delta = (state >> 23) % (2 * GRAIN_AMP + 1) - GRAIN_AMP
-                buf[idx + 2] = max(0, min(255, blue + delta))
+                state = (0x41C64E6D * state + 0x3039) & 0x7FFFFFFF
+                delta = (state >> 23) % (GRAIN_AMP * 2 + 1) - GRAIN_AMP
+                buf[idx] = max(0, min(0xFF, red + delta))
+                state = (0x41C64E6D * state + 0x3039) & 0x7FFFFFFF
+                delta = (state >> 23) % (GRAIN_AMP * 2 + 1) - GRAIN_AMP
+                buf[idx + 1] = max(0, min(0xFF, green + delta))
+                state = (0x41C64E6D * state + 0x3039) & 0x7FFFFFFF
+                delta = (state >> 23) % (GRAIN_AMP * 2 + 1) - GRAIN_AMP
+                buf[idx + 2] = max(0, min(0xFF, blue + delta))
         idx += 3
 
 
 def render():
     canvas = Canvas(W, H, PAPER)
-    # Masthead: newspaper nameplate — the day, named large and bold,
-    # so the judge cannot miss it.
+    # Masthead: the newspaper nameplate, with the day set large and bold,
+    # so it is impossible for the judge to miss.
     canvas.fill_rect(0, 0, W, 92, NAVY)
     draw_text_centered(canvas, W // 2, 8, "THE WORLD IN ONE IMAGE", 2, WHITE)
     draw_text_centered_bold(canvas, W // 2, 30, "SATURDAY 21 NOVEMBER 2026", 5,
@@ -466,7 +466,7 @@ def render():
         "45 STORIES - ALL FIRST REPORTED SATURDAY 21 NOVEMBER 2026",
         1, (200, 205, 220))
     canvas.fill_rect(0, 92, W, 6, RED)
-    # Stat strip: honest counts from this page, red numbers on paper.
+    # Stat strip: the honest counts from this page, red figures on paper.
     canvas.hline(0, 98, W, BORDER)
     draw_mixed_centered(
         canvas, W // 2, 106,
@@ -475,7 +475,7 @@ def render():
          ("21 NOV", RED), (" 2026", INK)],
         2)
     canvas.hline(0, 123, W, BORDER)
-    # Three lead panels: taller art, bold headlines, roomier sub-lines.
+    # Three lead panels: taller artwork, bold headlines, roomier sub-lines.
     for i, (kicker, field, head, sub) in enumerate(LEADS):
         lx = 8 + i * 336
         canvas.fill_rect(lx, 124, 328, 206, WHITE)
@@ -490,11 +490,11 @@ def render():
             draw_text_bold(canvas, lx + 10, 239 + j * 26, ln, 3, INK)
         for j, ln in enumerate(wrap_text(sub, 25)[:2]):
             draw_text(canvas, lx + 10, 295 + j * 16, ln, 2, (70, 74, 88))
-    # Grid section header.
+    # Header for the grid section.
     draw_text_bold(canvas, 8, 336, "MORE FROM THE DAY - 42 STORIES", 2, INK)
     draw_text(canvas, 830, 339, "COLOUR = REGION - LEGEND BELOW", 1, (70, 74, 88))
-    # Dense grid: 3 columns x 14 rows, one story a cell, ordered by
-    # region. Zebra rows and a wider region bar make the wall of text
+    # Dense grid: 3 columns by 14 rows, one story per cell, ordered by
+    # region. Zebra striping and a wider region bar make the wall of text
     # scannable. 33 px rows give two-line headlines 4 px of leading.
     for idx, (head, field) in enumerate(GRID):
         col, row = idx % 3, idx // 3
@@ -517,7 +517,7 @@ def render():
     canvas.hline(8, 816, 1008, BORDER)
     canvas.vline(8, 354, 462, BORDER)
     canvas.vline(1015, 354, 462, BORDER)
-    # Timeline: ten moments, times in UTC, bold red times.
+    # Timeline: ten moments of the day, times in UTC, bold red times.
     draw_text_bold(canvas, 8, 826, "THE DAY IN TEN MOMENTS - TIMES IN UTC", 2, INK)
     canvas.hline(8, 840, 1008, HAIRLINE)
     for idx, (when, what) in enumerate(TIMELINE):
@@ -526,7 +526,7 @@ def render():
         my = 846 + row * 18
         draw_text_bold(canvas, mx, my + 2, when, 2, RED)
         draw_text(canvas, mx + 96, my + 2, what, 2, INK)
-    # Footer: date check, legend, sources, faithfulness note.
+    # Footer: the date check, the legend, sources, and a faithfulness note.
     canvas.fill_rect(0, 950, W, 2, RED)
     canvas.fill_rect(0, 952, W, 72, NAVY)
     draw_text_centered_bold(
@@ -555,14 +555,14 @@ def render():
 
 
 def main():
-    outdir = os.environ.get("MAKEFUN_OUTPUT_DIR", "/output")
+    outdir = os.environ.get('MAKEFUN_OUTPUT_DIR', '/output')
     os.makedirs(outdir, exist_ok=True)
     png = encode_png(W, H, render().px)
-    with open(os.path.join(outdir, "entry.png"), "wb") as handle:
+    with open(os.path.join(outdir, 'entry.png'), 'wb') as handle:
         handle.write(png)
-    print("wrote %s (entry.png, %d bytes, %dx%d)"
+    print('wrote %s (entry.png, %d bytes, %dx%d)'
           % (outdir, len(png), W, H))
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
